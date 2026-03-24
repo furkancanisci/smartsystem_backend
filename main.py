@@ -5,7 +5,7 @@ import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 import os
 
@@ -117,6 +117,68 @@ class Bildirim(Base):
 
 # Create all tables in the database
 Base.metadata.create_all(bind=engine)
+
+def eski_shema_uyumlulugunu_sagla():
+    """Backfill missing columns in legacy deployments where create_all cannot alter existing tables."""
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE IF EXISTS cihaz_durumu ADD COLUMN IF NOT EXISTS bolge_id INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS cihaz_durumu ADD COLUMN IF NOT EXISTS bitki_profili_id INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS cihaz_durumu ADD COLUMN IF NOT EXISTS otomatik_sulama_aktif BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS cihaz_durumu ADD COLUMN IF NOT EXISTS manuel_nem_esigi DOUBLE PRECISION DEFAULT 30.0"))
+        conn.execute(text("ALTER TABLE IF EXISTS cihaz_durumu ADD COLUMN IF NOT EXISTS son_guncelleme TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()"))
+
+        conn.execute(text("ALTER TABLE IF EXISTS sensor_gecmisi ADD COLUMN IF NOT EXISTS valf_durumu VARCHAR"))
+        conn.execute(text("ALTER TABLE IF EXISTS sulama_programlari ADD COLUMN IF NOT EXISTS aktif_mi BOOLEAN DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE IF EXISTS bildirimler ADD COLUMN IF NOT EXISTS okundu_mu BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS bildirimler ADD COLUMN IF NOT EXISTS olusturulma_zamani TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()"))
+
+        # Keep FK constraints best-effort to avoid startup failures on partially managed DBs.
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_cihaz_durumu_bolge_id'
+                ) THEN
+                    ALTER TABLE cihaz_durumu
+                    ADD CONSTRAINT fk_cihaz_durumu_bolge_id
+                    FOREIGN KEY (bolge_id) REFERENCES bolgeler(id);
+                END IF;
+            EXCEPTION WHEN undefined_table THEN
+                NULL;
+            END
+            $$;
+        """))
+
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_cihaz_durumu_bitki_profili_id'
+                ) THEN
+                    ALTER TABLE cihaz_durumu
+                    ADD CONSTRAINT fk_cihaz_durumu_bitki_profili_id
+                    FOREIGN KEY (bitki_profili_id) REFERENCES bitki_profilleri(id);
+                END IF;
+            EXCEPTION WHEN undefined_table THEN
+                NULL;
+            END
+            $$;
+        """))
+
+def postgres_sequence_duzeltmeleri():
+    """Prevent duplicate PK errors after manual id inserts in seed (especially user id=2)."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            SELECT setval(
+                pg_get_serial_sequence('kullanicilar', 'id'),
+                COALESCE((SELECT MAX(id) FROM kullanicilar), 1),
+                true
+            );
+        """))
+
+eski_shema_uyumlulugunu_sagla()
 
 def ornek_verileri_yukle():
     """Seed minimal demo data for all tables and keep esp32_01 mapped to user id=2."""
@@ -264,6 +326,50 @@ def ornek_verileri_yukle():
         db.close()
 
 ornek_verileri_yukle()
+postgres_sequence_duzeltmeleri()
+
+def kullanici2_icin_esp32_eslesmesini_garanti_et(db: Session):
+    """Prototype convenience: make sure user id=2 always has esp32_01."""
+    kullanici2 = db.query(Kullanici).filter(Kullanici.id == 2).first()
+    if not kullanici2:
+        kullanici2 = Kullanici(id=2, kullanici_adi="demo_user_2", sifre="123456")
+        db.add(kullanici2)
+        db.flush()
+
+    bolge2 = db.query(Bolge).filter(
+        Bolge.kullanici_id == kullanici2.id,
+        Bolge.bolge_adi == "Demo Bolge - Kullanici 2"
+    ).first()
+    if not bolge2:
+        bolge2 = Bolge(kullanici_id=kullanici2.id, bolge_adi="Demo Bolge - Kullanici 2")
+        db.add(bolge2)
+        db.flush()
+
+    profil = db.query(BitkiProfili).filter(BitkiProfili.bitki_adi == "Domates").first()
+    if not profil:
+        profil = BitkiProfili(bitki_adi="Domates", ideal_nem_esigi=45.0, maksimum_nem=70.0)
+        db.add(profil)
+        db.flush()
+
+    cihaz = db.query(CihazDurumu).filter(CihazDurumu.cihaz_id == "esp32_01").first()
+    if not cihaz:
+        cihaz = CihazDurumu(
+            cihaz_id="esp32_01",
+            bolge_id=bolge2.id,
+            bitki_profili_id=profil.id,
+            toprak_nemi_yuzde=40.0,
+            valf_durumu="KAPALI",
+            otomatik_sulama_aktif=True,
+            manuel_nem_esigi=38.0,
+            son_guncelleme=datetime.utcnow()
+        )
+        db.add(cihaz)
+    else:
+        cihaz.bolge_id = bolge2.id
+        if not cihaz.bitki_profili_id:
+            cihaz.bitki_profili_id = profil.id
+
+    db.commit()
 
 # --- FastAPI Application ---
 app = FastAPI(title="Advanced Smart Irrigation Server")
@@ -408,6 +514,10 @@ def login_yap(istek: LoginIstegi, db: Session = Depends(get_db)):
 
 @app.get("/api/kullanici/{kullanici_id}/cihazlar")
 def kullanici_cihazlarini_getir(kullanici_id: int, db: Session = Depends(get_db)):
+    if kullanici_id == 2:
+        # Keep prototype demo stable even if DB was reset/partially seeded.
+        kullanici2_icin_esp32_eslesmesini_garanti_et(db)
+
     bolgeler = db.query(Bolge).filter(Bolge.kullanici_id == kullanici_id).all()
     cihazlar = []
     for bolge in bolgeler:
