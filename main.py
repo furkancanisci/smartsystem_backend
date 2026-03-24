@@ -118,6 +118,153 @@ class Bildirim(Base):
 # Create all tables in the database
 Base.metadata.create_all(bind=engine)
 
+def ornek_verileri_yukle():
+    """Seed minimal demo data for all tables and keep esp32_01 mapped to user id=2."""
+    db = SessionLocal()
+    try:
+        # Ensure user with id=2 exists for prototype scenarios.
+        kullanici2 = db.query(Kullanici).filter(Kullanici.id == 2).first()
+        if not kullanici2:
+            demo2_adi = "demo_user_2"
+            mevcut_demo2 = db.query(Kullanici).filter(Kullanici.kullanici_adi == demo2_adi).first()
+            if mevcut_demo2:
+                mevcut_demo2.sifre = "123456"
+                kullanici2 = mevcut_demo2
+            else:
+                kullanici2 = Kullanici(id=2, kullanici_adi=demo2_adi, sifre="123456")
+                db.add(kullanici2)
+            db.flush()
+
+        # Also keep one extra user for list and relationship examples.
+        kullanici1 = db.query(Kullanici).filter(Kullanici.kullanici_adi == "demo_user_1").first()
+        if not kullanici1:
+            kullanici1 = Kullanici(kullanici_adi="demo_user_1", sifre="123456")
+            db.add(kullanici1)
+            db.flush()
+
+        # Regions
+        bolge2 = db.query(Bolge).filter(
+            Bolge.kullanici_id == kullanici2.id,
+            Bolge.bolge_adi == "Demo Bolge - Kullanici 2"
+        ).first()
+        if not bolge2:
+            bolge2 = Bolge(kullanici_id=kullanici2.id, bolge_adi="Demo Bolge - Kullanici 2")
+            db.add(bolge2)
+            db.flush()
+
+        bolge1 = db.query(Bolge).filter(
+            Bolge.kullanici_id == kullanici1.id,
+            Bolge.bolge_adi == "Demo Bolge - Kullanici 1"
+        ).first()
+        if not bolge1:
+            bolge1 = Bolge(kullanici_id=kullanici1.id, bolge_adi="Demo Bolge - Kullanici 1")
+            db.add(bolge1)
+            db.flush()
+
+        # Plant profiles
+        domates = db.query(BitkiProfili).filter(BitkiProfili.bitki_adi == "Domates").first()
+        if not domates:
+            domates = BitkiProfili(bitki_adi="Domates", ideal_nem_esigi=45.0, maksimum_nem=70.0)
+            db.add(domates)
+            db.flush()
+
+        biber = db.query(BitkiProfili).filter(BitkiProfili.bitki_adi == "Biber").first()
+        if not biber:
+            biber = BitkiProfili(bitki_adi="Biber", ideal_nem_esigi=40.0, maksimum_nem=65.0)
+            db.add(biber)
+            db.flush()
+
+        # Device status: keep esp32_01 explicitly mapped to user id=2 via bolge2.
+        cihaz_esp32 = db.query(CihazDurumu).filter(CihazDurumu.cihaz_id == "esp32_01").first()
+        if not cihaz_esp32:
+            cihaz_esp32 = CihazDurumu(
+                cihaz_id="esp32_01",
+                bolge_id=bolge2.id,
+                bitki_profili_id=domates.id,
+                toprak_nemi_yuzde=42.0,
+                valf_durumu="KAPALI",
+                otomatik_sulama_aktif=True,
+                manuel_nem_esigi=38.0,
+                son_guncelleme=datetime.utcnow()
+            )
+            db.add(cihaz_esp32)
+            db.flush()
+        else:
+            cihaz_esp32.bolge_id = bolge2.id
+            cihaz_esp32.bitki_profili_id = domates.id
+            if cihaz_esp32.manuel_nem_esigi is None:
+                cihaz_esp32.manuel_nem_esigi = 38.0
+            cihaz_esp32.son_guncelleme = datetime.utcnow()
+
+        # Additional demo device
+        cihaz_demo = db.query(CihazDurumu).filter(CihazDurumu.cihaz_id == "esp32_demo_02").first()
+        if not cihaz_demo:
+            cihaz_demo = CihazDurumu(
+                cihaz_id="esp32_demo_02",
+                bolge_id=bolge1.id,
+                bitki_profili_id=biber.id,
+                toprak_nemi_yuzde=55.0,
+                valf_durumu="KAPALI",
+                otomatik_sulama_aktif=False,
+                manuel_nem_esigi=35.0,
+                son_guncelleme=datetime.utcnow()
+            )
+            db.add(cihaz_demo)
+            db.flush()
+
+        # Sensor history records
+        if not db.query(SensorGecmisi).filter(SensorGecmisi.cihaz_id == "esp32_01").first():
+            db.add(SensorGecmisi(
+                cihaz_id="esp32_01",
+                toprak_nemi_yuzde=42.0,
+                valf_durumu="KAPALI",
+                kayit_zamani=datetime.utcnow()
+            ))
+
+        if not db.query(SensorGecmisi).filter(SensorGecmisi.cihaz_id == "esp32_demo_02").first():
+            db.add(SensorGecmisi(
+                cihaz_id="esp32_demo_02",
+                toprak_nemi_yuzde=55.0,
+                valf_durumu="KAPALI",
+                kayit_zamani=datetime.utcnow()
+            ))
+
+        # Irrigation schedules
+        if not db.query(SulamaProgrami).filter(
+            SulamaProgrami.cihaz_id == "esp32_01",
+            SulamaProgrami.calisma_saati == "08:30"
+        ).first():
+            db.add(SulamaProgrami(cihaz_id="esp32_01", calisma_saati="08:30", calisma_suresi_dakika=10, aktif_mi=True))
+
+        if not db.query(SulamaProgrami).filter(
+            SulamaProgrami.cihaz_id == "esp32_demo_02",
+            SulamaProgrami.calisma_saati == "19:00"
+        ).first():
+            db.add(SulamaProgrami(cihaz_id="esp32_demo_02", calisma_saati="19:00", calisma_suresi_dakika=8, aktif_mi=True))
+
+        # Notifications
+        if not db.query(Bildirim).filter(
+            Bildirim.kullanici_id == kullanici2.id,
+            Bildirim.baslik == "Hos Geldin"
+        ).first():
+            db.add(Bildirim(
+                kullanici_id=kullanici2.id,
+                baslik="Hos Geldin",
+                mesaj="Demo veri hazirlandi. esp32_01 cihazi hesabina baglandi.",
+                okundu_mu=False,
+                olusturulma_zamani=datetime.utcnow()
+            ))
+
+        db.commit()
+        print("✅ Demo seed verileri yuklendi/guncellendi.")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Seed verisi yuklenirken hata: {e}")
+    finally:
+        db.close()
+
+ornek_verileri_yukle()
+
 # --- FastAPI Application ---
 app = FastAPI(title="Advanced Smart Irrigation Server")
 
@@ -131,6 +278,10 @@ def get_db():
 # --- Data Models for API ---
 class ValfKomutu(BaseModel):
     komut: str
+
+class RegisterIstegi(BaseModel):
+    kullanici_adi: str
+    sifre: str
 
 class LoginIstegi(BaseModel):
     kullanici_adi: str
@@ -229,22 +380,32 @@ threading.Thread(target=mqtt_baslat, daemon=True).start()
 def ana_sayfa():
     return {"message": "Advanced Smart Irrigation Server is Active!"}
 
+# --- UPDATED API: Separate Registration Endpoint ---
+@app.post("/api/register")
+def kayit_ol(istek: RegisterIstegi, db: Session = Depends(get_db)):
+    mevcut_kullanici = db.query(Kullanici).filter(Kullanici.kullanici_adi == istek.kullanici_adi).first()
+    if mevcut_kullanici:
+        raise HTTPException(status_code=409, detail="This username is already taken. Please choose another one.")
+        
+    yeni_kullanici = Kullanici(kullanici_adi=istek.kullanici_adi, sifre=istek.sifre)
+    db.add(yeni_kullanici)
+    db.commit()
+    db.refresh(yeni_kullanici)
+    return {"message": "User registered successfully.", "kullanici_id": yeni_kullanici.id, "status": "success"}
+
+# --- UPDATED API: Strict Login Endpoint ---
 @app.post("/api/login")
 def login_yap(istek: LoginIstegi, db: Session = Depends(get_db)):
     kullanici = db.query(Kullanici).filter(Kullanici.kullanici_adi == istek.kullanici_adi).first()
+    
     if not kullanici:
-        yeni_kullanici = Kullanici(kullanici_adi=istek.kullanici_adi, sifre=istek.sifre)
-        db.add(yeni_kullanici)
-        db.commit()
-        db.refresh(yeni_kullanici)
-        return {"message": "New user registered and logged in.", "kullanici_id": yeni_kullanici.id, "status": "success"}
+        raise HTTPException(status_code=404, detail="User not found. Please register first.")
     
     if kullanici.sifre != istek.sifre:
         raise HTTPException(status_code=401, detail="Invalid password.")
     
     return {"message": "Login successful.", "kullanici_id": kullanici.id, "status": "success"}
 
-# --- NEW API: Get all devices belonging to a user ---
 @app.get("/api/kullanici/{kullanici_id}/cihazlar")
 def kullanici_cihazlarini_getir(kullanici_id: int, db: Session = Depends(get_db)):
     bolgeler = db.query(Bolge).filter(Bolge.kullanici_id == kullanici_id).all()
@@ -259,7 +420,6 @@ def kullanici_cihazlarini_getir(kullanici_id: int, db: Session = Depends(get_db)
             })
     return cihazlar
 
-# --- NEW API: Get all regions belonging to a user ---
 @app.get("/api/kullanici/{kullanici_id}/bolgeler")
 def kullanici_bolgelerini_getir(kullanici_id: int, db: Session = Depends(get_db)):
     bolgeler = db.query(Bolge).filter(Bolge.kullanici_id == kullanici_id).all()
@@ -301,7 +461,6 @@ def cihaz_ayarlarini_guncelle(cihaz_id: str, ayarlar: CihazAyarIstegi, db: Sessi
     db.commit()
     return {"message": "Device settings updated successfully."}
 
-# --- NEW API: Assign device to a region and plant profile ---
 @app.post("/api/cihaz/{cihaz_id}/ata")
 def cihaz_ata(cihaz_id: str, atama: CihazAtamaIstegi, db: Session = Depends(get_db)):
     cihaz = db.query(CihazDurumu).filter(CihazDurumu.cihaz_id == cihaz_id).first()
@@ -320,7 +479,6 @@ def bolge_ekle(istek: BolgeEkleIstegi, db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Region '{istek.bolge_adi}' created successfully."}
 
-# --- NEW API: Add a new plant profile ---
 @app.post("/api/bitki_profili/ekle")
 def bitki_profili_ekle(istek: BitkiProfiliEkleIstegi, db: Session = Depends(get_db)):
     yeni_profil = BitkiProfili(bitki_adi=istek.bitki_adi, ideal_nem_esigi=istek.ideal_nem_esigi, maksimum_nem=istek.maksimum_nem)
@@ -328,13 +486,11 @@ def bitki_profili_ekle(istek: BitkiProfiliEkleIstegi, db: Session = Depends(get_
     db.commit()
     return {"message": f"Plant profile '{istek.bitki_adi}' added successfully."}
 
-# --- NEW API: Get all plant profiles ---
 @app.get("/api/bitki_profilleri")
 def bitki_profilleri_getir(db: Session = Depends(get_db)):
     profiller = db.query(BitkiProfili).all()
     return [{"id": p.id, "bitki_adi": p.bitki_adi, "ideal_nem_esigi": p.ideal_nem_esigi} for p in profiller]
 
-# --- NEW API: Add an irrigation schedule ---
 @app.post("/api/cihaz/{cihaz_id}/program_ekle")
 def sulama_programi_ekle(cihaz_id: str, istek: SulamaProgramiEkleIstegi, db: Session = Depends(get_db)):
     yeni_program = SulamaProgrami(cihaz_id=cihaz_id, calisma_saati=istek.calisma_saati, calisma_suresi_dakika=istek.calisma_suresi_dakika)
@@ -342,7 +498,6 @@ def sulama_programi_ekle(cihaz_id: str, istek: SulamaProgramiEkleIstegi, db: Ses
     db.commit()
     return {"message": "Irrigation schedule added successfully."}
 
-# --- NEW API: Get irrigation schedules for a device ---
 @app.get("/api/cihaz/{cihaz_id}/programlar")
 def sulama_programlari_getir(cihaz_id: str, db: Session = Depends(get_db)):
     programlar = db.query(SulamaProgrami).filter(SulamaProgrami.cihaz_id == cihaz_id).all()
