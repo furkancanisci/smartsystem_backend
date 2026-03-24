@@ -425,10 +425,14 @@ def on_connect(client, userdata, flags, reason_code, properties):
         print(f"❌ MQTT Connection error, code: {reason_code}")
 
 def on_message(client, userdata, msg):
+    db = None
     try:
         payload = json.loads(msg.payload.decode('utf-8'))
         gelen_cihaz_id = payload.get("cihaz_id")
-        nem = payload.get("toprak_nemi_yuzde", 0)
+        if not gelen_cihaz_id:
+            raise ValueError("'cihaz_id' alani zorunludur")
+
+        nem = float(payload.get("toprak_nemi_yuzde", 0))
         valf = payload.get("valf_durumu", "BİLİNMİYOR")
         
         db = SessionLocal()
@@ -437,13 +441,10 @@ def on_message(client, userdata, msg):
         if not cihaz:
             cihaz = CihazDurumu(cihaz_id=gelen_cihaz_id, toprak_nemi_yuzde=nem, valf_durumu=valf, son_guncelleme=datetime.utcnow())
             db.add(cihaz)
-            db.commit()
-            db.refresh(cihaz)
         else:
             cihaz.toprak_nemi_yuzde = nem
             cihaz.valf_durumu = valf
             cihaz.son_guncelleme = datetime.utcnow()
-            db.commit()
             
         # Log data to history table for charts
         gecmis_kayit = SensorGecmisi(cihaz_id=gelen_cihaz_id, toprak_nemi_yuzde=nem, valf_durumu=valf, kayit_zamani=datetime.utcnow())
@@ -467,10 +468,14 @@ def on_message(client, userdata, msg):
                 db.add(yeni_bildirim)
                 
         db.commit()
-        db.close()
         print(f"📥 [SAVED] {gelen_cihaz_id}: Moisture %{nem} | Valve: {valf}")
     except Exception as e:
+        if db is not None:
+            db.rollback()
         print(f"Invalid data packet: {e}")
+    finally:
+        if db is not None:
+            db.close()
 
 def mqtt_baslat():
     mqtt_client.on_connect = on_connect
